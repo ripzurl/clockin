@@ -1,4 +1,4 @@
-import { authenticate, isMonth, json, loadMonth, safeTz } from "./_lib.js";
+import { authenticate, fillAddresses, isMonth, json, loadMonth, safeTz } from "./_lib.js";
 
 export default async (req) => {
   const auth = await authenticate(req);
@@ -17,6 +17,7 @@ export default async (req) => {
     return json({ error: e.message }, 500);
   }
   const { rows } = result;
+  await fillAddresses(auth.db, rows);
 
   // Private photos: short-lived signed links (1 hour) instead of public URLs.
   const paths = rows.flatMap((r) => [r.inPhoto, r.outPhoto]).filter(Boolean);
