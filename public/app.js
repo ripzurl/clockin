@@ -6,7 +6,7 @@ let session = null;
 let timer = null;
 let busy = false;
 let signUpMode = false;
-let photoMode = "optional";   // off | optional | required (set by the server)
+let photoMode = "required";   // required (default) or off for testing (set by the server)
 
 const pad = (n) => String(n).padStart(2, "0");
 const monthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
@@ -64,7 +64,7 @@ async function init() {
   try {
     cfg = await (await fetch("/api/config")).json();
     if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) throw new Error("missing");
-    photoMode = cfg.photoMode || "optional";
+    photoMode = cfg.photoMode || "required";
   } catch {
     showAuth();
     setMsg($("#auth-msg"), "App is not configured yet. Set the Supabase environment variables in Netlify.", true);
@@ -165,15 +165,13 @@ async function fileToJpeg(file) {
 function takePhoto(action) {
   return new Promise((resolve) => {
     const dlg = $("#cam"), video = $("#cam-video"), shot = $("#cam-shot"), msg = $("#cam-msg");
-    const btn = { cancel: $("#cam-cancel"), skip: $("#cam-skip"), retake: $("#cam-retake"), capture: $("#cam-capture"), confirm: $("#cam-confirm") };
+    const btn = { cancel: $("#cam-cancel"), retake: $("#cam-retake"), capture: $("#cam-capture"), confirm: $("#cam-confirm") };
     const fileInput = $("#cam-file");
     let stream = null, dataUrl = null, done = false;
 
     const verb = action === "out" ? "clock out" : "clock in";
     $("#cam-title").textContent = `Take a selfie to ${verb}`;
     btn.confirm.textContent = `Use photo and ${verb}`;
-    btn.skip.textContent = `${verb[0].toUpperCase()}${verb.slice(1)} without photo`;
-    btn.skip.hidden = photoMode !== "optional";
 
     const stop = () => {
       if (stream) stream.getTracks().forEach((t) => t.stop());
@@ -207,7 +205,6 @@ function takePhoto(action) {
     };
 
     btn.cancel.onclick = () => finish({ cancelled: true });
-    btn.skip.onclick = () => finish({ photo: null });
     btn.confirm.onclick = () => finish({ photo: dataUrl });
     btn.retake.onclick = () => { live(); setMsg(msg, ""); };
     dlg.oncancel = (e) => { e.preventDefault(); finish({ cancelled: true }); };
@@ -328,7 +325,7 @@ async function clockNow() {
     let photo = null;
     if (photoMode !== "off") {
       const res = await takePhoto(action);
-      if (res.cancelled) return;
+      if (res.cancelled || !res.photo) return; // a photo is mandatory
       photo = res.photo;
     }
     setMsg($("#clock-msg"), "Checking your location…");
@@ -376,11 +373,11 @@ function photoThumb(url, label, eager) {
     : "";
 }
 
-/** Small pin that opens the clock-in / clock-out spot in Google Maps. */
-function pin(loc, label) {
-  if (!loc) return "";
+/** Street address under the time (tap to open the spot in Google Maps). */
+function place(loc, address) {
+  if (!loc) return '<span class="addr muted">No location</span>';
   const q = `${loc.lat},${loc.lng}`;
-  return `<a class="pin" href="https://www.google.com/maps?q=${encodeURIComponent(q)}" target="_blank" rel="noopener" title="${esc(q)}" aria-label="${label} location on map"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg>${label}</a>`;
+  return `<a class="addr" href="https://www.google.com/maps?q=${encodeURIComponent(q)}" target="_blank" rel="noopener" title="${esc(q)}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg><span>${address ? esc(address) : "View on map"}</span></a>`;
 }
 
 async function loadHistory() {
@@ -406,18 +403,20 @@ async function loadHistory() {
     $("#h-total").textContent = d.totals.hours.toFixed(2);
     $("#h-days").textContent = String(d.totals.days);
     const showName = isManager() && state.person === "all";
-    $("#h-body").innerHTML = d.entries.length
+    $("#h-list").innerHTML = d.entries.length
       ? d.entries.map((e, i) => {
-          const text = [showName ? e.name : "", e.remarks].filter(Boolean).map(esc).join(" · ");
-          const where = pin(e.inLoc, "In") + pin(e.outLoc, "Out") || '<span class="muted">No location</span>';
-          return `<tr class="has-sub">
-            <td><span class="d">${esc(e.day)} ${esc(e.date.slice(8))}</span></td>
-            <td class="nowrap">${photoThumb(e.inPhotoUrl, "In", i < 30)}${esc(e.inTime)}</td>
-            <td class="nowrap">${e.outTime ? photoThumb(e.outPhotoUrl, "Out", i < 30) + esc(e.outTime) : '<span class="live">Working</span>'}</td>
-            <td class="r">${e.hours === null ? "" : e.hours.toFixed(2)}</td>
-          </tr><tr class="sub-row"><td colspan="4"><span class="sub">${text ? `<span>${text}</span> ` : ""}<span class="pins">${where}</span></span></td></tr>`;
+          const note = esc(e.remarks);
+          const inCol = `<div class="e-col"><span class="e-label">In</span><div class="tline">${photoThumb(e.inPhotoUrl, "In", i < 30)}<span>${esc(e.inTime)}</span></div>${place(e.inLoc, e.inAddress)}</div>`;
+          const outCol = e.outTime
+            ? `<div class="e-col"><span class="e-label">Out</span><div class="tline">${photoThumb(e.outPhotoUrl, "Out", i < 30)}<span>${esc(e.outTime)}</span></div>${place(e.outLoc, e.outAddress)}</div>`
+            : '<div class="e-col"><span class="e-label">Out</span><span class="live">Working</span></div>';
+          return `<article class="entry">
+            <div class="e-head"><span class="d">${esc(e.day)} ${esc(e.date.slice(8))}${showName ? ` <span class="e-name">· ${esc(e.name)}</span>` : ""}</span><span class="e-hours">${e.hours === null ? "" : e.hours.toFixed(2) + " h"}</span></div>
+            <div class="e-cols">${inCol}${outCol}</div>
+            ${note ? `<div class="e-note">${note}</div>` : ""}
+          </article>`;
         }).join("")
-      : '<tr><td colspan="4" class="empty">No clock-ins this month.</td></tr>';
+      : '<p class="empty">No clock-ins this month.</p>';
     setMsg($("#h-msg"), "");
   } catch (err) {
     setMsg($("#h-msg"), err.message, true);
@@ -449,7 +448,7 @@ function renderSettings() {
   $("#s-email").textContent = session?.user?.email || "";
   $("#s-role").textContent = isManager() ? "Manager" : "Employee";
   $("#s-tz").textContent = TZ;
-  $("#s-photo").textContent = { off: "Off", optional: "Optional", required: "Required" }[photoMode] || photoMode;
+  $("#s-photo").textContent = { off: "Off", required: "Required" }[photoMode] || photoMode;
 }
 
 $("#pw-form").addEventListener("submit", async (e) => {
