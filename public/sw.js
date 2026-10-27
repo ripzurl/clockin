@@ -1,5 +1,5 @@
 // Caches only the static app shell. API calls and Supabase auth always go to the network.
-const CACHE = "timeclock-v1";
+const CACHE = "timeclock-v3";
 const SHELL = ["/", "/style.css", "/app.js", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (e) => {

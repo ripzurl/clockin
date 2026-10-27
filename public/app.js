@@ -1,32 +1,37 @@
 const $ = (s) => document.querySelector(s);
-const CIRC = 678.6;          // ring circumference (2 * PI * 108)
-const SHIFT_SECONDS = 8 * 3600;
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
-let sb;                      // Supabase client (auth only)
+let sb;                       // Supabase client (sign-in only)
 let session = null;
-let state = { profile: null, open: null, recent: [], skew: 0 };
 let timer = null;
 let busy = false;
 let signUpMode = false;
+let photoMode = "optional";   // off | optional | required (set by the server)
+let photo = null;             // photo taken on Home, waiting for Clock In/Out
+
+const pad = (n) => String(n).padStart(2, "0");
+const monthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+const state = { profile: null, open: null, recent: [], skew: 0, month: monthKey(new Date()), person: null, people: [] };
 
 /* ---------- helpers ---------- */
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const pad = (n) => String(n).padStart(2, "0");
 const hhmmss = (sec) => `${pad(Math.floor(sec / 3600))}:${pad(Math.floor((sec % 3600) / 60))}:${pad(sec % 60)}`;
 const hm = (min) => `${Math.floor(min / 60)}h ${pad(Math.round(min % 60))}m`;
-const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
-const fmtDay = (iso) => new Date(iso).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
 const nowMs = () => Date.now() + state.skew; // corrected toward server time
+const isManager = () => state.profile?.role === "manager";
+
+function clockParts(iso) {
+  if (!iso) return null;
+  const s = new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
+  const [time, ap] = s.replace(/[\u202f\u00a0]/g, " ").split(" ");
+  return { time, ap };
+}
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-      ...(opts.headers || {}),
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}`, ...(opts.headers || {}) },
   });
   if (res.status === 401) { await sb.auth.signOut(); throw new Error("Session expired. Please sign in again."); }
   if (!res.ok) {
@@ -52,7 +57,7 @@ function getPosition() {
   });
 }
 
-/* ---------- auth ---------- */
+/* ---------- start-up & auth ---------- */
 async function init() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
@@ -60,6 +65,7 @@ async function init() {
   try {
     cfg = await (await fetch("/api/config")).json();
     if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) throw new Error("missing");
+    photoMode = cfg.photoMode || "optional";
   } catch {
     showAuth();
     setMsg($("#auth-msg"), "App is not configured yet. Set the Supabase environment variables in Netlify.", true);
@@ -87,6 +93,7 @@ async function route() {
   if (!session) return showAuth();
   $("#auth-view").hidden = true;
   $("#app-view").hidden = false;
+  showView("home");
   await refresh();
 }
 
@@ -99,7 +106,6 @@ function setAuthMode(signUp) {
   $("#password").autocomplete = signUp ? "new-password" : "current-password";
   setMsg($("#auth-msg"), "");
 }
-
 $("#auth-toggle").addEventListener("click", () => setAuthMode(!signUpMode));
 
 $("#auth-form").addEventListener("submit", async (e) => {
@@ -125,9 +131,122 @@ $("#auth-form").addEventListener("submit", async (e) => {
   }
 });
 
-$("#signout").addEventListener("click", () => sb.auth.signOut());
+/* ---------- navigation ---------- */
+function showView(name) {
+  ["home", "history", "settings"].forEach((v) => ($(`#view-${v}`).hidden = v !== name));
+  document.querySelectorAll(".nav button").forEach((b) => {
+    const on = b.dataset.view === name;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-current", on ? "page" : "false");
+  });
+  window.scrollTo(0, 0);
+  if (name === "history") loadHistory();
+  if (name === "settings") renderSettings();
+}
+document.querySelectorAll(".nav button").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
 
-/* ---------- employee view ---------- */
+/* ---------- camera sheet ---------- */
+function toJpeg(source, w, h) {
+  const scale = Math.min(1, 640 / Math.max(w, h)); // keep photos small (about 40-80 KB)
+  const c = document.createElement("canvas");
+  c.width = Math.round(w * scale);
+  c.height = Math.round(h * scale);
+  c.getContext("2d").drawImage(source, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.72);
+}
+
+async function fileToJpeg(file) {
+  const bmp = await createImageBitmap(file);
+  const url = toJpeg(bmp, bmp.width, bmp.height);
+  if (bmp.close) bmp.close();
+  return url;
+}
+
+/** Opens the camera sheet. Resolves {cancelled:true} or {photo: dataUrl}. */
+function takePhoto() {
+  return new Promise((resolve) => {
+    const dlg = $("#cam"), video = $("#cam-video"), shot = $("#cam-shot"), msg = $("#cam-msg");
+    const btn = { cancel: $("#cam-cancel"), retake: $("#cam-retake"), capture: $("#cam-capture"), confirm: $("#cam-confirm") };
+    const fileInput = $("#cam-file");
+    let stream = null, dataUrl = null, done = false;
+
+    const stop = () => {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      stream = null;
+      video.srcObject = null;
+    };
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      stop();
+      if (dlg.open) dlg.close();
+      resolve(result);
+    };
+    const live = () => {
+      dataUrl = null;
+      shot.hidden = true;
+      video.hidden = !stream;
+      btn.capture.hidden = false;
+      btn.retake.hidden = true;
+      btn.confirm.hidden = true;
+    };
+    const preview = (url) => {
+      dataUrl = url;
+      shot.src = url;
+      shot.hidden = false;
+      video.hidden = true;
+      btn.capture.hidden = true;
+      btn.retake.hidden = false;
+      btn.confirm.hidden = false;
+      setMsg(msg, "");
+    };
+
+    btn.cancel.onclick = () => finish({ cancelled: true });
+    btn.confirm.onclick = () => finish({ photo: dataUrl });
+    btn.retake.onclick = () => { live(); setMsg(msg, ""); };
+    dlg.oncancel = (e) => { e.preventDefault(); finish({ cancelled: true }); };
+
+    btn.capture.onclick = () => {
+      if (stream) {
+        const w = video.videoWidth, h = video.videoHeight;
+        if (!w || !h) return setMsg(msg, "The camera is still starting. Try again in a moment.");
+        preview(toJpeg(video, w, h));
+      } else {
+        fileInput.click(); // fallback: open the phone's camera app
+      }
+    };
+    fileInput.onchange = async () => {
+      const f = fileInput.files[0];
+      fileInput.value = "";
+      if (!f) return;
+      try { preview(await fileToJpeg(f)); }
+      catch { setMsg(msg, "That photo could not be read. Please try again.", true); }
+    };
+
+    dlg.showModal();
+    live();
+    setMsg(msg, "Starting camera…");
+    (async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        return setMsg(msg, "Live camera is not available here. Tap Take photo to use your camera app.", true);
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 960 } },
+          audio: false,
+        });
+        if (done) return stop();
+        video.srcObject = stream;
+        live();
+        setMsg(msg, "");
+      } catch {
+        setMsg(msg, "Camera access is blocked. Allow it in your browser settings, or tap Take photo to use your camera app.", true);
+      }
+    })();
+  });
+}
+
+/* ---------- home ---------- */
 async function refresh() {
   try {
     const res = await api("/api/clock");
@@ -136,149 +255,219 @@ async function refresh() {
     state.open = data.open;
     state.recent = data.recent;
     state.skew = new Date(data.serverTime).getTime() - Date.now();
-    renderClock();
+    if (!state.person) state.person = state.profile.id;
+    renderHome();
   } catch (err) {
     setMsg($("#clock-msg"), err.message, true);
   }
 }
 
-function renderClock() {
+/** The open shift, or today's most recent finished shift. */
+function currentShift() {
+  if (state.open) return state.open;
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  return state.recent.find((e) => new Date(e.clock_in) >= midnight) || null;
+}
+
+function setTimeBox(sel, iso) {
+  const el = $(sel);
+  const p = clockParts(iso);
+  el.classList.toggle("empty", !p);
+  el.innerHTML = p ? `<b>${esc(p.time)}</b><small>${esc(p.ap)}</small>` : "<b>--:--</b><small>--</small>";
+}
+
+function renderHome() {
   const p = state.profile;
   $("#hello").textContent = `Hi, ${p.name || "there"}`;
   $("#today").textContent = new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
-  $("#tabs").hidden = p.role !== "manager";
+
+  const shift = currentShift();
+  setTimeBox("#t-in", shift?.clock_in);
+  setTimeBox("#t-out", shift?.clock_out);
 
   const on = !!state.open;
-  const dial = $("#punch");
-  dial.classList.toggle("on", on);
-  $("#dial-label").textContent = on ? "Clock out" : "Clock in";
-  $("#status").textContent = on ? `Clocked in at ${fmtTime(state.open.clock_in)}` : "Not clocked in";
+  const punch = $("#punch");
+  punch.textContent = on ? "Clock Out" : "Clock In";
+  punch.classList.toggle("out", on);
 
-  renderRecent();
+  $("#cam-wrap").hidden = photoMode === "off";
+  renderPhotoTile();
+
   clearInterval(timer);
   tick();
   timer = setInterval(tick, 1000);
 }
 
-function elapsedSeconds() {
-  return state.open ? Math.max(0, Math.floor((nowMs() - new Date(state.open.clock_in).getTime()) / 1000)) : 0;
-}
-
 function tick() {
-  const sec = elapsedSeconds();
-  $("#dial-time").textContent = hhmmss(sec);
-  const frac = state.open ? Math.min(sec / SHIFT_SECONDS, 1) : 0;
-  $("#progress").style.strokeDashoffset = String(CIRC * (1 - frac));
-  updateSummary();
+  const el = $("#status");
+  if (state.open) {
+    const sec = Math.max(0, Math.floor((nowMs() - new Date(state.open.clock_in).getTime()) / 1000));
+    el.textContent = `Clocked in · ${hhmmss(sec)}`;
+    el.classList.add("on");
+  } else {
+    const shift = currentShift();
+    el.textContent = shift && shift.clock_out ? `Shift finished · ${hm(shift.duration_minutes)}` : "Not clocked in";
+    el.classList.remove("on");
+  }
 }
 
-function updateSummary() {
-  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
-  let todayMin = 0, totalMin = 0;
-  for (const e of state.recent) {
-    const mins = e.clock_out ? e.duration_minutes : (nowMs() - new Date(e.clock_in).getTime()) / 60000;
-    totalMin += mins;
-    if (new Date(e.clock_in) >= midnight) todayMin += mins;
-  }
-  $("#sum-today").textContent = hm(todayMin);
-  $("#sum-week").textContent = hm(totalMin);
+function renderPhotoTile() {
+  $("#tile-img").hidden = !photo;
+  $("#tile-icon").toggleAttribute("hidden", !!photo); // SVG elements ignore the .hidden property
+  if (photo) $("#tile-img").src = photo;
+  $("#cam-cap").textContent = photo
+    ? "Tap to retake"
+    : photoMode === "required" ? "Take photo (required)" : "Take photo";
 }
 
-function renderRecent() {
-  const ul = $("#recent");
-  if (!state.recent.length) {
-    ul.innerHTML = '<li class="empty">No shifts yet. Tap Clock in to start your first one.</li>';
-    return;
-  }
-  ul.innerHTML = state.recent.map((e) => `
-    <li>
-      <div>
-        <div class="when">${esc(fmtDay(e.clock_in))}</div>
-        <div class="range">${esc(fmtTime(e.clock_in))} – ${e.clock_out ? esc(fmtTime(e.clock_out)) : "now"}</div>
-      </div>
-      <div class="dur ${e.clock_out ? "" : "live"}">${e.clock_out ? hm(e.duration_minutes) : "Running"}</div>
-    </li>`).join("");
-}
+$("#cam-tile").addEventListener("click", async () => {
+  if (busy) return;
+  const res = await takePhoto();
+  if (!res.cancelled && res.photo) { photo = res.photo; renderPhotoTile(); }
+});
 
 $("#punch").addEventListener("click", async () => {
   if (busy) return;
   busy = true;
-  const dial = $("#punch");
-  dial.disabled = true;
+  const btn = $("#punch");
+  btn.disabled = true;
   const action = state.open ? "out" : "in";
-  setMsg($("#clock-msg"), "Checking your location…");
   try {
+    if (photoMode === "required" && !photo) {
+      const res = await takePhoto();
+      if (res.cancelled || !res.photo) return;
+      photo = res.photo;
+      renderPhotoTile();
+    }
+    setMsg($("#clock-msg"), "Checking your location…");
     const pos = await getPosition();
-    setMsg($("#clock-msg"), "");
-    await api("/api/clock", { method: "POST", body: JSON.stringify({ action, ...pos }) });
+    setMsg($("#clock-msg"), "Saving…");
+    const note = $("#remarks").value.trim() || null;
+    await api("/api/clock", { method: "POST", body: JSON.stringify({ action, ...pos, photo, note }) });
+    photo = null;
+    $("#remarks").value = "";
     await refresh();
     setMsg($("#clock-msg"), action === "in" ? "Clocked in." : "Clocked out.");
   } catch (err) {
     setMsg($("#clock-msg"), err.message, true);
   } finally {
     busy = false;
-    dial.disabled = false;
+    btn.disabled = false;
   }
 });
 
-/* ---------- manager view ---------- */
-document.querySelectorAll(".tab").forEach((t) =>
-  t.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
-    const team = t.dataset.tab === "team";
-    $("#clock-view").hidden = team;
-    $("#team-view").hidden = !team;
-    if (team) loadTeam();
-  })
-);
+/* ---------- history ---------- */
+function monthLabel(key) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" });
+}
 
-function range() {
-  const f = $("#from").value, t = $("#to").value;
-  const q = new URLSearchParams();
-  if (f) q.set("from", new Date(f + "T00:00:00").toISOString());
-  if (t) { const end = new Date(t + "T00:00:00"); end.setDate(end.getDate() + 1); q.set("to", end.toISOString()); }
+function shiftMonth(delta) {
+  const [y, m] = state.month.split("-").map(Number);
+  state.month = monthKey(new Date(y, m - 1 + delta, 1));
+  loadHistory();
+}
+$("#m-prev").addEventListener("click", () => shiftMonth(-1));
+$("#m-next").addEventListener("click", () => shiftMonth(1));
+$("#person").addEventListener("change", (e) => { state.person = e.target.value; loadHistory(); });
+
+function historyQuery() {
+  const q = new URLSearchParams({ month: state.month, tz: TZ });
+  if (isManager() && state.person) q.set("employee", state.person);
   return q;
 }
 
-async function loadTeam() {
-  const msg = $("#team-msg");
-  if (!$("#from").value) {
-    const d = new Date(); d.setDate(d.getDate() - 6);
-    $("#from").value = d.toISOString().slice(0, 10);
-    $("#to").value = new Date().toISOString().slice(0, 10);
-  }
-  setMsg(msg, "Loading…");
+function photoThumb(url, label) {
+  return url
+    ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="${label} photo"><img class="thumb" loading="lazy" src="${esc(url)}" alt="${label} photo"></a>`
+    : "";
+}
+
+async function loadHistory() {
+  $("#m-label").textContent = monthLabel(state.month);
+  $("#m-next").disabled = state.month >= monthKey(new Date());
+  setMsg($("#h-msg"), "Loading…");
   try {
-    const res = await api("/api/entries?" + range());
-    const { entries } = await res.json();
-    $("#team-body").innerHTML = entries.length
-      ? entries.map((e) => `
-        <tr>
-          <td>${esc(e.name)}</td>
-          <td>${esc(fmtDay(e.clock_in))} ${esc(fmtTime(e.clock_in))}</td>
-          <td>${e.clock_out ? esc(fmtTime(e.clock_out)) : "Still in"}</td>
-          <td class="r">${e.clock_out ? (e.duration_minutes / 60).toFixed(2) : ""}</td>
-        </tr>`).join("")
-      : '<tr><td colspan="4" class="empty">No entries in this date range.</td></tr>';
-    setMsg(msg, `${entries.length} entries`);
+    const res = await api("/api/entries?" + historyQuery());
+    const d = await res.json();
+
+    if (isManager()) {
+      state.people = d.people || [];
+      const sel = $("#person");
+      sel.innerHTML =
+        `<option value="all">Everyone</option>` +
+        state.people.map((p) => `<option value="${esc(p.id)}">${esc(p.name || "Unnamed")}${p.id === state.profile.id ? " (me)" : ""}</option>`).join("");
+      sel.value = state.person;
+      $("#person-wrap").hidden = false;
+    } else {
+      $("#person-wrap").hidden = true;
+    }
+
+    $("#h-total").textContent = d.totals.hours.toFixed(2);
+    $("#h-days").textContent = String(d.totals.days);
+    const showName = isManager() && state.person === "all";
+    $("#h-body").innerHTML = d.entries.length
+      ? d.entries.map((e) => {
+          const sub = [showName ? e.name : "", e.remarks].filter(Boolean).join(" · ");
+          return `<tr${sub ? ' class="has-sub"' : ""}>
+            <td><span class="d">${esc(e.day)} ${esc(e.date.slice(8))}</span></td>
+            <td class="nowrap">${photoThumb(e.inPhotoUrl, "In")}${esc(e.inTime)}</td>
+            <td class="nowrap">${e.outTime ? photoThumb(e.outPhotoUrl, "Out") + esc(e.outTime) : '<span class="live">Working</span>'}</td>
+            <td class="r">${e.hours === null ? "" : e.hours.toFixed(2)}</td>
+          </tr>${sub ? `<tr class="sub-row"><td colspan="4"><span class="sub">${esc(sub)}</span></td></tr>` : ""}`;
+        }).join("")
+      : '<tr><td colspan="4" class="empty">No clock-ins this month.</td></tr>';
+    setMsg($("#h-msg"), "");
   } catch (err) {
-    setMsg(msg, err.message, true);
+    setMsg($("#h-msg"), err.message, true);
   }
 }
 
-$("#load-team").addEventListener("click", loadTeam);
-
 $("#export").addEventListener("click", async () => {
-  const q = range(); q.set("format", "csv");
+  const btn = $("#export");
+  btn.disabled = true;
+  setMsg($("#h-msg"), "Preparing Excel file…");
   try {
-    const res = await api("/api/entries?" + q);
+    const res = await api("/api/export?" + historyQuery());
     const url = URL.createObjectURL(await res.blob());
-    const a = Object.assign(document.createElement("a"), { href: url, download: "time-entries.csv" });
+    const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
+    const a = Object.assign(document.createElement("a"), { href: url, download: m ? m[1] : `Attendance-${state.month}.xlsx` });
     document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setMsg($("#h-msg"), "Excel file downloaded.");
   } catch (err) {
-    setMsg($("#team-msg"), err.message, true);
+    setMsg($("#h-msg"), err.message, true);
+  } finally {
+    btn.disabled = false;
   }
 });
+
+/* ---------- settings ---------- */
+function renderSettings() {
+  $("#s-name").textContent = state.profile?.name || "";
+  $("#s-email").textContent = session?.user?.email || "";
+  $("#s-role").textContent = isManager() ? "Manager" : "Employee";
+  $("#s-tz").textContent = TZ;
+  $("#s-photo").textContent = { off: "Off", optional: "Optional", required: "Required" }[photoMode] || photoMode;
+}
+
+$("#pw-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("#pw-submit");
+  btn.disabled = true;
+  setMsg($("#pw-msg"), "");
+  try {
+    const { error } = await sb.auth.updateUser({ password: $("#new-password").value });
+    if (error) throw error;
+    $("#new-password").value = "";
+    setMsg($("#pw-msg"), "Password updated.");
+  } catch (err) {
+    setMsg($("#pw-msg"), err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#signout").addEventListener("click", () => sb.auth.signOut());
 
 init();
