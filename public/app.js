@@ -370,10 +370,17 @@ function historyQuery() {
   return q;
 }
 
-function photoThumb(url, label) {
+function photoThumb(url, label, eager) {
   return url
-    ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="${label} photo"><img class="thumb" loading="lazy" src="${esc(url)}" alt="${label} photo"></a>`
+    ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="${label} photo"><img class="thumb" loading="${eager ? "eager" : "lazy"}" src="${esc(url)}" alt="${label} photo"></a>`
     : "";
+}
+
+/** Small pin that opens the clock-in / clock-out spot in Google Maps. */
+function pin(loc, label) {
+  if (!loc) return "";
+  const q = `${loc.lat},${loc.lng}`;
+  return `<a class="pin" href="https://www.google.com/maps?q=${encodeURIComponent(q)}" target="_blank" rel="noopener" title="${esc(q)}" aria-label="${label} location on map"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></svg>${label}</a>`;
 }
 
 async function loadHistory() {
@@ -400,14 +407,15 @@ async function loadHistory() {
     $("#h-days").textContent = String(d.totals.days);
     const showName = isManager() && state.person === "all";
     $("#h-body").innerHTML = d.entries.length
-      ? d.entries.map((e) => {
-          const sub = [showName ? e.name : "", e.remarks].filter(Boolean).join(" · ");
-          return `<tr${sub ? ' class="has-sub"' : ""}>
+      ? d.entries.map((e, i) => {
+          const text = [showName ? e.name : "", e.remarks].filter(Boolean).map(esc).join(" · ");
+          const where = pin(e.inLoc, "In") + pin(e.outLoc, "Out") || '<span class="muted">No location</span>';
+          return `<tr class="has-sub">
             <td><span class="d">${esc(e.day)} ${esc(e.date.slice(8))}</span></td>
-            <td class="nowrap">${photoThumb(e.inPhotoUrl, "In")}${esc(e.inTime)}</td>
-            <td class="nowrap">${e.outTime ? photoThumb(e.outPhotoUrl, "Out") + esc(e.outTime) : '<span class="live">Working</span>'}</td>
+            <td class="nowrap">${photoThumb(e.inPhotoUrl, "In", i < 30)}${esc(e.inTime)}</td>
+            <td class="nowrap">${e.outTime ? photoThumb(e.outPhotoUrl, "Out", i < 30) + esc(e.outTime) : '<span class="live">Working</span>'}</td>
             <td class="r">${e.hours === null ? "" : e.hours.toFixed(2)}</td>
-          </tr>${sub ? `<tr class="sub-row"><td colspan="4"><span class="sub">${esc(sub)}</span></td></tr>` : ""}`;
+          </tr><tr class="sub-row"><td colspan="4"><span class="sub">${text ? `<span>${text}</span> ` : ""}<span class="pins">${where}</span></span></td></tr>`;
         }).join("")
       : '<tr><td colspan="4" class="empty">No clock-ins this month.</td></tr>';
     setMsg($("#h-msg"), "");
