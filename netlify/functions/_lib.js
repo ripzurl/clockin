@@ -99,6 +99,8 @@ export function parts(iso, tz) {
 export const isMonth = (m) => /^\d{4}-(0[1-9]|1[0-2])$/.test(m || "");
 const isUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v || "");
 
+const loc = (lat, lng) => (typeof lat === "number" && typeof lng === "number" ? { lat, lng } : null);
+
 /**
  * Entries for one month (oldest first). Employees always get their own rows.
  * Managers can ask for one person (employee=<id>) or everyone (employee=all).
@@ -118,7 +120,7 @@ export async function loadMonth(auth, { month, tz, employee }) {
 
   let q = auth.db
     .from("time_entries")
-    .select("id, employee_id, clock_in, clock_out, duration_minutes, note, out_note, in_photo, out_photo, profiles(name)")
+    .select("id, employee_id, clock_in, clock_out, duration_minutes, note, out_note, in_photo, out_photo, in_lat, in_lng, out_lat, out_lng, profiles(name)")
     .gte("clock_in", from)
     .lt("clock_in", to)
     .order("clock_in", { ascending: true })
@@ -145,6 +147,8 @@ export async function loadMonth(auth, { month, tz, employee }) {
         remarks: [e.note, e.out_note].filter(Boolean).join(" / "),
         inPhoto: e.in_photo,
         outPhoto: e.out_photo,
+        inLoc: loc(e.in_lat, e.in_lng),
+        outLoc: loc(e.out_lat, e.out_lng),
       };
     });
   return { rows, everyone: who === null };
