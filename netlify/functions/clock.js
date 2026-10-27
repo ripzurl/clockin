@@ -1,4 +1,4 @@
-import { authenticate, checkGeofence, json, num, photoMode } from "./_lib.js";
+import { authenticate, checkGeofence, json, num, photoMode, reverseGeocode } from "./_lib.js";
 
 const BUCKET = "attendance-photos";
 const MAX_PHOTO_BYTES = 1_500_000;
@@ -66,6 +66,9 @@ export default async (req) => {
     const geo = checkGeofence(lat, lng);
     if (!geo.ok) return json({ error: geo.error }, 403);
 
+    // Look up the street address while the photo is being checked and saved
+    const addressPromise = reverseGeocode(lat, lng);
+
     // Photo rules
     const mode = photoMode();
     let photo = null;
@@ -89,6 +92,8 @@ export default async (req) => {
       if (photoPath) await db.storage.from(BUCKET).remove([photoPath]);
     };
 
+    const address = await addressPromise;
+
     // Server time is the source of truth, never the phone's clock.
     const now = new Date().toISOString();
 
@@ -101,6 +106,7 @@ export default async (req) => {
           in_lat: lat,
           in_lng: lng,
           in_photo: photoPath,
+          in_address: address,
           note,
         })
         .select()
@@ -122,6 +128,7 @@ export default async (req) => {
         clock_out: now,
         out_lat: lat,
         out_lng: lng,
+        out_address: address,
         ...(photoPath ? { out_photo: photoPath } : {}),
         out_note: note,
       })
