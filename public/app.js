@@ -7,7 +7,6 @@ let timer = null;
 let busy = false;
 let signUpMode = false;
 let photoMode = "optional";   // off | optional | required (set by the server)
-let photo = null;             // photo taken on Home, waiting for Clock In/Out
 
 const pad = (n) => String(n).padStart(2, "0");
 const monthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
@@ -163,12 +162,18 @@ async function fileToJpeg(file) {
 }
 
 /** Opens the camera sheet. Resolves {cancelled:true} or {photo: dataUrl}. */
-function takePhoto() {
+function takePhoto(action) {
   return new Promise((resolve) => {
     const dlg = $("#cam"), video = $("#cam-video"), shot = $("#cam-shot"), msg = $("#cam-msg");
-    const btn = { cancel: $("#cam-cancel"), retake: $("#cam-retake"), capture: $("#cam-capture"), confirm: $("#cam-confirm") };
+    const btn = { cancel: $("#cam-cancel"), skip: $("#cam-skip"), retake: $("#cam-retake"), capture: $("#cam-capture"), confirm: $("#cam-confirm") };
     const fileInput = $("#cam-file");
     let stream = null, dataUrl = null, done = false;
+
+    const verb = action === "out" ? "clock out" : "clock in";
+    $("#cam-title").textContent = `Take a selfie to ${verb}`;
+    btn.confirm.textContent = `Use photo and ${verb}`;
+    btn.skip.textContent = `${verb[0].toUpperCase()}${verb.slice(1)} without photo`;
+    btn.skip.hidden = photoMode !== "optional";
 
     const stop = () => {
       if (stream) stream.getTracks().forEach((t) => t.stop());
@@ -202,6 +207,7 @@ function takePhoto() {
     };
 
     btn.cancel.onclick = () => finish({ cancelled: true });
+    btn.skip.onclick = () => finish({ photo: null });
     btn.confirm.onclick = () => finish({ photo: dataUrl });
     btn.retake.onclick = () => { live(); setMsg(msg, ""); };
     dlg.oncancel = (e) => { e.preventDefault(); finish({ cancelled: true }); };
@@ -291,7 +297,7 @@ function renderHome() {
   punch.classList.toggle("out", on);
 
   $("#cam-wrap").hidden = photoMode === "off";
-  renderPhotoTile();
+  $("#cam-cap").textContent = on ? "Take photo to clock out" : "Take photo to clock in";
 
   clearInterval(timer);
   tick();
@@ -311,40 +317,25 @@ function tick() {
   }
 }
 
-function renderPhotoTile() {
-  $("#tile-img").hidden = !photo;
-  $("#tile-icon").toggleAttribute("hidden", !!photo); // SVG elements ignore the .hidden property
-  if (photo) $("#tile-img").src = photo;
-  $("#cam-cap").textContent = photo
-    ? "Tap to retake"
-    : photoMode === "required" ? "Take photo (required)" : "Take photo";
-}
-
-$("#cam-tile").addEventListener("click", async () => {
-  if (busy) return;
-  const res = await takePhoto();
-  if (!res.cancelled && res.photo) { photo = res.photo; renderPhotoTile(); }
-});
-
-$("#punch").addEventListener("click", async () => {
+/** One action: take the photo, then clock in (or out) with it. */
+async function clockNow() {
   if (busy) return;
   busy = true;
-  const btn = $("#punch");
-  btn.disabled = true;
+  const buttons = [$("#punch"), $("#cam-tile")];
+  buttons.forEach((b) => (b.disabled = true));
   const action = state.open ? "out" : "in";
   try {
-    if (photoMode === "required" && !photo) {
-      const res = await takePhoto();
-      if (res.cancelled || !res.photo) return;
+    let photo = null;
+    if (photoMode !== "off") {
+      const res = await takePhoto(action);
+      if (res.cancelled) return;
       photo = res.photo;
-      renderPhotoTile();
     }
     setMsg($("#clock-msg"), "Checking your location…");
     const pos = await getPosition();
     setMsg($("#clock-msg"), "Saving…");
     const note = $("#remarks").value.trim() || null;
     await api("/api/clock", { method: "POST", body: JSON.stringify({ action, ...pos, photo, note }) });
-    photo = null;
     $("#remarks").value = "";
     await refresh();
     setMsg($("#clock-msg"), action === "in" ? "Clocked in." : "Clocked out.");
@@ -352,9 +343,11 @@ $("#punch").addEventListener("click", async () => {
     setMsg($("#clock-msg"), err.message, true);
   } finally {
     busy = false;
-    btn.disabled = false;
+    buttons.forEach((b) => (b.disabled = false));
   }
-});
+}
+$("#cam-tile").addEventListener("click", clockNow);
+$("#punch").addEventListener("click", clockNow);
 
 /* ---------- history ---------- */
 function monthLabel(key) {
