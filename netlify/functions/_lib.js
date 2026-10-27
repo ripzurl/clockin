@@ -71,9 +71,71 @@ export function checkGeofence(lat, lng) {
 
 export const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
-/** off = no camera step, optional = camera shown with a Skip button, required = photo mandatory */
-export const photoMode = () =>
-  ["off", "optional", "required"].includes(process.env.PHOTO_MODE) ? process.env.PHOTO_MODE : "optional";
+/** A photo is mandatory for every clock in/out. Set PHOTO_MODE=off only for testing. */
+export const photoMode = () => (process.env.PHOTO_MODE === "off" ? "off" : "required");
+
+/* ---------- street address from coordinates (OpenStreetMap Nominatim) ---------- */
+function formatAddress(j) {
+  const a = j?.address;
+  if (!a) return j?.display_name ? String(j.display_name).slice(0, 200) : null;
+  const street = [a.house_number, a.road].filter(Boolean).join(" ");
+  const area = a.suburb || a.neighbourhood || a.quarter || a.city_district;
+  const city = a.city || a.town || a.village || a.municipality || a.county;
+  const parts = [a.building || a.amenity || a.office, street, area, city, a.postcode].filter(Boolean);
+  const unique = parts.filter((p, i) => parts.indexOf(p) === i);
+  const text = unique.length ? unique.join(", ") : j.display_name || "";
+  return text ? text.slice(0, 200) : null;
+}
+
+/** Returns a short address like "12 Example Road, Jurong West, Singapore 640123", or null. */
+export async function reverseGeocode(lat, lng) {
+  if (typeof lat !== "number" || typeof lng !== "number") return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 3500);
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&accept-language=en&lat=${lat}&lon=${lng}`;
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { "User-Agent": "TimeClock-Attendance/1.0", Accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    return formatAddress(await res.json());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fills in missing addresses for old entries (a few per request, 1 lookup per second,
+ * as the free service requires) and saves them so each place is only looked up once.
+ */
+export async function fillAddresses(db, rows, limit = 5) {
+  const key = (l) => `${l.lat.toFixed(4)},${l.lng.toFixed(4)}`;
+  const known = new Map();
+  for (const r of rows) {
+    if (r.inLoc && r.inAddress) known.set(key(r.inLoc), r.inAddress);
+    if (r.outLoc && r.outAddress) known.set(key(r.outLoc), r.outAddress);
+  }
+  let lookups = 0;
+  for (const r of rows) {
+    for (const [loc, field, column] of [[r.inLoc, "inAddress", "in_address"], [r.outLoc, "outAddress", "out_address"]]) {
+      if (!loc || r[field]) continue;
+      let addr = known.get(key(loc));
+      if (!addr) {
+        if (lookups >= limit) continue;
+        if (lookups > 0) await new Promise((done) => setTimeout(done, 1100));
+        lookups++;
+        addr = await reverseGeocode(loc.lat, loc.lng);
+        if (!addr) continue;
+        known.set(key(loc), addr);
+      }
+      r[field] = addr;
+      await db.from("time_entries").update({ [column]: addr }).eq("id", r.id);
+    }
+  }
+}
 
 /* ---------- time zone + monthly history helpers ---------- */
 export function safeTz(tz) {
@@ -120,7 +182,7 @@ export async function loadMonth(auth, { month, tz, employee }) {
 
   let q = auth.db
     .from("time_entries")
-    .select("id, employee_id, clock_in, clock_out, duration_minutes, note, out_note, in_photo, out_photo, in_lat, in_lng, out_lat, out_lng, profiles(name)")
+    .select("id, employee_id, clock_in, clock_out, duration_minutes, note, out_note, in_photo, out_photo, in_lat, in_lng, out_lat, out_lng, in_address, out_address, profiles(name)")
     .gte("clock_in", from)
     .lt("clock_in", to)
     .order("clock_in", { ascending: true })
@@ -149,6 +211,8 @@ export async function loadMonth(auth, { month, tz, employee }) {
         outPhoto: e.out_photo,
         inLoc: loc(e.in_lat, e.in_lng),
         outLoc: loc(e.out_lat, e.out_lng),
+        inAddress: e.in_address,
+        outAddress: e.out_address,
       };
     });
   return { rows, everyone: who === null };
