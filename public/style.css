@@ -144,7 +144,12 @@ tr:last-child td { border-bottom: 0; }
 .d { font-weight: 700; white-space: nowrap; }
 .empty { color: var(--muted); text-align: center; padding: 22px 12px; }
 .live { color: var(--ok); font-weight: 700; }
-.thumb { width: 22px; height: 22px; border-radius: 6px; object-fit: cover; border: 1px solid var(--line); vertical-align: middle; margin-right: 5px; }
+.thumb { width: 28px; height: 28px; border-radius: 7px; object-fit: cover; border: 1px solid var(--line); background: var(--paper); vertical-align: middle; margin-right: 6px; }
+.muted { color: var(--muted); }
+.pins { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; }
+.pin { display: inline-flex; align-items: center; gap: 3px; color: var(--focus); font-weight: 700; text-decoration: none; }
+.pin:hover { text-decoration: underline; }
+.pin .ico { width: 14px; height: 14px; }
 
 /* ---------- settings ---------- */
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 0; }
