@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { authenticate, isMonth, json, loadMonth, safeTz } from "./_lib.js";
+import { authenticate, fillAddresses, isMonth, json, loadMonth, safeTz } from "./_lib.js";
 
 const NAVY = "FF163A70";
 
@@ -19,6 +19,7 @@ export default async (req) => {
     return json({ error: e.message }, 500);
   }
   const { rows, everyone } = result;
+  await fillAddresses(auth.db, rows);
 
   const wb = new ExcelJS.Workbook();
   wb.creator = "Time Clock";
@@ -31,15 +32,21 @@ export default async (req) => {
     { header: "Clock IN", key: "inTime", width: 13 },
     { header: "Clock OUT", key: "outTime", width: 17 },
     { header: "Hours", key: "hours", width: 9 },
-    { header: "Clock IN location", key: "inLoc", width: 26 },
-    { header: "Clock OUT location", key: "outLoc", width: 26 },
+    { header: "Clock IN location", key: "inLoc", width: 44 },
+    { header: "Clock OUT location", key: "outLoc", width: 44 },
     { header: "Remarks", key: "remarks", width: 40 }
   );
   ws.columns = cols;
 
-  // Location cell: "lat, lng" that opens Google Maps when clicked
-  const mapCell = (l) =>
-    l ? { text: `${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`, hyperlink: `https://www.google.com/maps?q=${l.lat},${l.lng}` } : "";
+  // Location cell: street address (or coordinates) that opens Google Maps when clicked
+  const mapCell = (l, address) =>
+    l
+      ? {
+          text: address || `${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`,
+          hyperlink: `https://www.google.com/maps?q=${l.lat},${l.lng}`,
+          tooltip: `${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`,
+        }
+      : "";
 
   rows.forEach((r) =>
     ws.addRow({
@@ -49,8 +56,8 @@ export default async (req) => {
       inTime: r.inTime,
       outTime: r.outTime || "Still clocked in",
       hours: r.hours,
-      inLoc: mapCell(r.inLoc),
-      outLoc: mapCell(r.outLoc),
+      inLoc: mapCell(r.inLoc, r.inAddress),
+      outLoc: mapCell(r.outLoc, r.outAddress),
       remarks: r.remarks,
     })
   );
