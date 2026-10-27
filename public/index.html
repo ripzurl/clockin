@@ -64,11 +64,10 @@
       </label>
 
       <div class="cam-wrap" id="cam-wrap">
-        <button class="cam-tile" id="cam-tile" type="button" aria-label="Take a photo">
-          <svg class="ico" id="tile-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3V19H4z"/><circle cx="12" cy="13.5" r="3.5"/></svg>
-          <img id="tile-img" alt="Your photo" hidden>
+        <button class="cam-tile" id="cam-tile" type="button" aria-label="Take a photo to clock in or out">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3V19H4z"/><circle cx="12" cy="13.5" r="3.5"/></svg>
         </button>
-        <span class="cam-cap" id="cam-cap">Take photo</span>
+        <span class="cam-cap" id="cam-cap">Take photo to clock in</span>
       </div>
 
       <button class="btn clock" id="punch" type="button">Clock In</button>
@@ -161,6 +160,7 @@
       <p class="msg" id="cam-msg" role="status"></p>
       <div class="cam-actions">
         <button class="btn" id="cam-cancel" type="button">Cancel</button>
+        <button class="btn" id="cam-skip" type="button" hidden>Clock in without photo</button>
         <button class="btn" id="cam-retake" type="button" hidden>Retake</button>
         <button class="btn primary" id="cam-capture" type="button">Take photo</button>
         <button class="btn primary" id="cam-confirm" type="button" hidden>Use photo</button>
