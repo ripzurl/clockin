@@ -31,9 +31,15 @@ export default async (req) => {
     { header: "Clock IN", key: "inTime", width: 13 },
     { header: "Clock OUT", key: "outTime", width: 17 },
     { header: "Hours", key: "hours", width: 9 },
+    { header: "Clock IN location", key: "inLoc", width: 26 },
+    { header: "Clock OUT location", key: "outLoc", width: 26 },
     { header: "Remarks", key: "remarks", width: 40 }
   );
   ws.columns = cols;
+
+  // Location cell: "lat, lng" that opens Google Maps when clicked
+  const mapCell = (l) =>
+    l ? { text: `${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}`, hyperlink: `https://www.google.com/maps?q=${l.lat},${l.lng}` } : "";
 
   rows.forEach((r) =>
     ws.addRow({
@@ -43,7 +49,14 @@ export default async (req) => {
       inTime: r.inTime,
       outTime: r.outTime || "Still clocked in",
       hours: r.hours,
+      inLoc: mapCell(r.inLoc),
+      outLoc: mapCell(r.outLoc),
       remarks: r.remarks,
+    })
+  );
+  ["inLoc", "outLoc"].forEach((k) =>
+    ws.getColumn(k).eachCell((c, n) => {
+      if (n > 1 && c.value && c.value.hyperlink) c.font = { color: { argb: "FF1155CC" }, underline: true };
     })
   );
 
