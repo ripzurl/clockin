@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Time Clock</title>
+  <meta name="theme-color" content="#1B2733">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Sign in -->
+  <main id="auth-view" class="screen" hidden>
+    <h1 class="brand">Time Clock</h1>
+    <form id="auth-form" class="card stack" autocomplete="on">
+      <h2 id="auth-title">Sign in</h2>
+      <label id="name-field" hidden>Full name
+        <input id="name" type="text" autocomplete="name">
+      </label>
+      <label>Email
+        <input id="email" type="email" required autocomplete="email">
+      </label>
+      <label>Password
+        <input id="password" type="password" required minlength="6" autocomplete="current-password">
+      </label>
+      <p id="auth-msg" class="msg" role="status"></p>
+      <button class="btn primary" type="submit" id="auth-submit">Sign in</button>
+      <button class="btn link" type="button" id="auth-toggle">New here? Create an account</button>
+    </form>
+  </main>
+
+  <!-- App -->
+  <div id="app-view" hidden>
+    <header class="topbar">
+      <div>
+        <div class="hello" id="hello"></div>
+        <div class="date" id="today"></div>
+      </div>
+      <button class="btn link" id="signout">Sign out</button>
+    </header>
+
+    <nav class="tabs" id="tabs" hidden>
+      <button class="tab active" data-tab="clock">My time</button>
+      <button class="tab" data-tab="team">Team</button>
+    </nav>
+
+    <!-- Employee view -->
+    <main id="clock-view" class="screen">
+      <section class="dial-wrap">
+        <button id="punch" class="dial" aria-live="polite">
+          <svg viewBox="0 0 240 240" class="ring" aria-hidden="true">
+            <circle class="track" cx="120" cy="120" r="108"/>
+            <circle class="progress" id="progress" cx="120" cy="120" r="108"/>
+          </svg>
+          <span class="dial-label" id="dial-label">Clock in</span>
+          <span class="dial-time" id="dial-time">00:00:00</span>
+        </button>
+        <p class="status" id="status">Not clocked in</p>
+        <p class="msg" id="clock-msg" role="status"></p>
+      </section>
+
+      <section class="summary">
+        <div><span class="k">Today</span><span class="v" id="sum-today">0h 00m</span></div>
+        <div><span class="k">Last 10 shifts</span><span class="v" id="sum-week">0h 00m</span></div>
+      </section>
+
+      <section>
+        <h3>Recent shifts</h3>
+        <ul class="list" id="recent"></ul>
+      </section>
+    </main>
+
+    <!-- Manager view -->
+    <main id="team-view" class="screen" hidden>
+      <div class="filters">
+        <label>From <input type="date" id="from"></label>
+        <label>To <input type="date" id="to"></label>
+        <button class="btn" id="load-team">Load</button>
+        <button class="btn" id="export">Export CSV</button>
+      </div>
+      <p class="msg" id="team-msg" role="status"></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Employee</th><th>In</th><th>Out</th><th class="r">Hours</th></tr></thead>
+          <tbody id="team-body"></tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
