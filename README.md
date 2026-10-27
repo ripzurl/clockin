@@ -64,3 +64,5 @@ Microsoft accounts, enable the Azure provider in Supabase Auth.
 - Offline queue: store the punch in IndexedDB and sync (server time would then need a "recorded at" field)
 - Reminder emails with Netlify scheduled functions
 - Location/photo consent screen and a data-retention policy (important in many countries)
+
+<!-- trigger deploy -->
